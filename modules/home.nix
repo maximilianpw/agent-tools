@@ -1,6 +1,7 @@
 {
   config,
   lib,
+  options,
   pkgs,
   ...
 }: let
@@ -80,6 +81,46 @@
   skillsDirs = lib.unique (
     lib.filter (dir: dir != null) (lib.mapAttrsToList (_: harness: harness.home.skillsDir) cfg.resolved.harnesses)
   );
+  linkConfig = pkgs.writeShellApplication {
+    name = "agent-tools-link-config";
+    runtimeInputs = [pkgs.coreutils];
+    text = builtins.readFile ./link-config.sh;
+  };
+
+  # Shell word for a path that may start with `~/`.
+  shellPath = path:
+    if lib.hasPrefix "~/" path
+    then ''"$HOME"/${lib.escapeShellArg (lib.removePrefix "~/" path)}''
+    else lib.escapeShellArg path;
+
+  # What this module already puts in a configuration directory wins over the
+  # same name in `configFrom`.
+  declaredIn = configDir:
+    lib.unique (
+      map (file: lib.head (lib.splitString "/" (lib.removePrefix "${configDir}/" file))) (
+        lib.filter (lib.hasPrefix "${configDir}/") (
+          lib.attrNames (instructionFiles // cfg.resolved.homeSkillLinks // configFiles)
+        )
+      )
+    );
+
+  linkConfigCommands = lib.mapAttrsToList (
+    name: harness: let
+      from = harness.configFrom;
+      active = harness.enable && from != null;
+    in ''
+      run ${lib.getExe linkConfig} \
+        "''${XDG_STATE_HOME:-$HOME/.local/state}"/agent-tools/${lib.escapeShellArg name}.links \
+        "$HOME"/${lib.escapeShellArg harness.home.configDir} \
+        ${
+        if active
+        then "${shellPath from.path} ${lib.escapeShellArgs (from.exclude ++ declaredIn harness.home.configDir)}"
+        else "''"
+      }
+    ''
+  ) (lib.filterAttrs (_: harness: harness.home.configDir != null) (removeAttrs cfg declared));
+  declared = lib.attrNames (options.agents.type.getSubOptions []);
+
   status = import ../lib/status.nix {inherit lib pkgs;} {
     base = ''"$HOME"'';
     dirs = skillsDirs;
@@ -108,6 +149,31 @@ in {
               type = types.nullOr instructionsType;
               default = null;
               description = "Instructions for this harness in place of `agents.defaults.instructions`.";
+            };
+            configFrom = mkOption {
+              type = types.nullOr (types.coercedTo types.str (path: {inherit path;}) (types.submodule {
+                options = {
+                  path = mkOption {
+                    type = types.str;
+                    description = "Directory on this machine, absolute or starting with `~/`.";
+                  };
+                  exclude = mkOption {
+                    type = types.listOf types.str;
+                    default = [];
+                    description = "Entries of the directory to leave out.";
+                  };
+                };
+              }));
+              default = null;
+              example = "~/pi-config";
+              description = ''
+                A directory on this machine, such as a checkout, whose entries
+                are all linked into this harness's configuration directory when
+                the configuration is activated. Edits there apply at once, and
+                new entries are picked up on the next activation. Hidden
+                entries are skipped, and nothing already in the configuration
+                directory is replaced.
+              '';
             };
             files = mkOption {
               type = types.attrsOf fileType;
@@ -145,6 +211,12 @@ in {
   ];
 
   config.home = {
+    # After Home Manager's own links, which take precedence.
+    activation.agentToolsLinkConfig = {
+      after = ["linkGeneration"];
+      before = [];
+      data = lib.concatStrings linkConfigCommands;
+    };
     packages = cfg.resolved.packages ++ lib.optional (skillsDirs != []) status;
     # One link per skill, so skills installed by other means can share the directory.
     file = lib.mkMerge [

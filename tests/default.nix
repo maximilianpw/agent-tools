@@ -14,6 +14,7 @@
     options.home = {
       packages = lib.mkOption {type = lib.types.listOf lib.types.package;};
       file = lib.mkOption {type = lib.types.attrsOf (lib.types.attrsOf lib.types.raw);};
+      activation = lib.mkOption {type = lib.types.attrsOf lib.types.raw;};
     };
   };
 
@@ -170,6 +171,40 @@
         })
       .file;
       expected = true;
+    };
+
+    testConfigFromLinksACheckoutAndYieldsToDeclaredFiles = {
+      expr = let
+        words = lib.filter (word: word != "" && word != "\\") (
+          lib.splitString " " (
+            lib.replaceStrings ["\n"] [" "]
+            (evalHome {
+              defaults.instructions = "shared";
+              pi = {
+                enable = true;
+                package = null;
+                configFrom = {
+                  path = "~/pi-config";
+                  exclude = ["README.md"];
+                };
+                files."settings.json".text = "{}";
+              };
+              claude-code.configFrom = "/srv/claude";
+            })
+            .activation
+            .agentToolsLinkConfig
+            .data
+          )
+        );
+        after = word: lib.sublist (lib.lists.findFirstIndex (other: other == word) null words + 1) 4 words;
+      in {
+        pi = after "\"$HOME\"/.pi/agent";
+        disabled = lib.take 1 (after "\"$HOME\"/.claude");
+      };
+      expected = {
+        pi = ["\"$HOME\"/pi-config" "README.md" "AGENTS.md" "settings.json"];
+        disabled = ["''"];
+      };
     };
 
     testEnabledNameWithoutHarnessEntryInstallsItsPackage = {
@@ -341,6 +376,50 @@ in {
     if failures == []
     then pkgs.runCommand "agent-tools-eval-tests" {} "touch $out"
     else throw "eval tests failed:\n${lib.generators.toPretty {} failures}";
+
+  link-config = let
+    link = lib.getExe (pkgs.writeShellApplication {
+      name = "agent-tools-link-config";
+      runtimeInputs = [pkgs.coreutils];
+      text = builtins.readFile ../modules/link-config.sh;
+    });
+  in
+    pkgs.runCommand "agent-tools-link-config-test" {} ''
+      mkdir -p checkout/extensions checkout/.git agent
+      echo settings > checkout/settings.json
+      echo readme > checkout/README.md
+      echo theirs > checkout/auth.json
+      echo theirs > checkout/AGENTS.md
+      echo mine > agent/auth.json
+      ln -s /nix/store/managed agent/AGENTS.md
+
+      ${link} state/pi.links agent checkout README.md 2> warnings
+
+      [[ $(readlink agent/settings.json) == checkout/settings.json ]]
+      [[ $(readlink agent/extensions) == checkout/extensions ]]
+      [[ ! -e agent/README.md && ! -e agent/.git ]]
+      [[ $(cat agent/auth.json) == mine ]]
+      [[ $(readlink agent/AGENTS.md) == /nix/store/managed ]]
+      grep --quiet 'agent/auth.json exists' warnings
+      ! grep --quiet AGENTS.md warnings
+      [[ $(cat state/pi.links) == $'extensions\nsettings.json' ]]
+
+      rm checkout/settings.json
+      echo new > checkout/models.json
+      ${link} state/pi.links agent checkout README.md 2> /dev/null
+
+      [[ ! -L agent/settings.json && -L agent/models.json ]]
+
+      ${link} state/pi.links agent "" 2> /dev/null
+
+      [[ ! -L agent/models.json && ! -L agent/extensions && ! -e state/pi.links ]]
+      [[ $(cat agent/auth.json) == mine && -L agent/AGENTS.md ]]
+
+      ${link} state/pi.links agent missing 2> warnings
+      grep --quiet 'missing does not exist' warnings
+
+      touch $out
+    '';
 
   project-install =
     pkgs.runCommand "agent-tools-project-install-test" {

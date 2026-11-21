@@ -79,6 +79,7 @@ never touched; pin their source to bring one under management.
 | `agents.<harness>.package` | Defaults to `agents.packageSet.<harness>`; `null` configures a harness you install another way. |
 | `agents.<harness>.instructions` | Instructions for this harness in place of the shared ones. Home Manager only. |
 | `agents.<harness>.extraInstructions` | Text appended to this harness's instructions. Home Manager only. |
+| `agents.<harness>.configFrom` | A directory on this machine, such as `"~/pi-config"`, whose entries are all linked into the harness's configuration directory. Takes a path, or `{ path; exclude; }`. Home Manager only. |
 | `agents.<harness>.files.<path>` | A file in the harness's configuration directory, such as `settings.json`. Takes a path, or `{ source; text; recursive; force; }`. Home Manager only. |
 | `agents.<harness>.skills.sources.<name>` | Skills for this harness only. The same name as a default source replaces it. |
 | `agents.<harness>.skills.include` | The only skill names this harness gets; unset means all. |
@@ -122,6 +123,12 @@ agents.my-agent = {
   project.skillsDir = ".agents/skills";
 };
 ```
+
+`configFrom` is for configuration you keep in its own checkout and edit in
+place. The links are made when the configuration is activated, so files added
+to the checkout appear on the next rebuild without being listed. Anything
+declared through this module, and anything already in the directory, is left as
+it is.
 
 Settings, hooks and plugins differ per harness, so they are not modelled: put
 the harness's own file in place with `files`. A harness that rewrites its
