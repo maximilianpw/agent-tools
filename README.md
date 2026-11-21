@@ -62,8 +62,10 @@ devShells.default = pkgs.mkShell {
 `nix flake init -t github:maximilianpw/agent-tools` writes a starting point.
 
 Entering the shell links each skill into the project's skill directories and
-lists the links in `.git/info/exclude`. Only symlinks into `/nix/store` are
-ever replaced or removed; skills committed to the project are left alone.
+lists the links in `.git/info/exclude`. The links it makes are recorded in the
+repository's git directory, and only those are ever replaced or removed; skills
+committed to the project are left alone. Outside a git repository it does
+nothing.
 
 `agent-tools status` lists what is in each skills directory and names the
 skills something else put there, such as a product CLI's installer. Those are
@@ -128,7 +130,7 @@ agents.my-agent = {
 place. The links are made when the configuration is activated, so files added
 to the checkout appear on the next rebuild without being listed. Anything
 declared through this module, and anything already in the directory, is left as
-it is.
+it is. That includes a link the harness later replaced with a file of its own.
 
 Settings, hooks and plugins differ per harness, so they are not modelled: put
 the harness's own file in place with `files`. A harness that rewrites its

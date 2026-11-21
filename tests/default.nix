@@ -197,14 +197,62 @@
           )
         );
         after = word: lib.sublist (lib.lists.findFirstIndex (other: other == word) null words + 1) 4 words;
+        before = word: lib.elemAt words (lib.lists.findFirstIndex (other: other == word) null words - 2);
       in {
         pi = after "\"$HOME\"/.pi/agent";
         disabled = lib.take 1 (after "\"$HOME\"/.claude");
+        mode = before "\"$HOME\"/.pi/agent";
       };
       expected = {
         pi = ["\"$HOME\"/pi-config" "README.md" "AGENTS.md" "settings.json"];
         disabled = ["''"];
+        mode = "link";
       };
+    };
+
+    testInstructionTextMayStartWithASlash = {
+      expr =
+        (evalHome {
+          defaults.instructions = "/plan before editing";
+          claude-code = {
+            enable = true;
+            package = null;
+          };
+        })
+        .file
+        .".claude/CLAUDE.md";
+      expected = {text = "/plan before editing";};
+    };
+
+    testHarnessesSharingAnInstructionsFileMustAgree = {
+      expr =
+        fails
+        (evalHome {
+          defaults.instructions = "shared";
+          claude-code.enable = true;
+          codex = {
+            enable = true;
+            home.instructionsFile = ".claude/CLAUDE.md";
+            extraInstructions = "codex only";
+          };
+        })
+      .file;
+      expected = true;
+    };
+
+    testConfigFromMustBeAbsolute = {
+      expr =
+        fails
+        (evalHome {
+          pi = {
+            enable = true;
+            configFrom = "pi-config";
+          };
+        })
+      .activation
+      .agentToolsLinkConfig
+      .data;
+      expected = true;
     };
 
     testEnabledNameWithoutHarnessEntryInstallsItsPackage = {
@@ -385,37 +433,51 @@ in {
     });
   in
     pkgs.runCommand "agent-tools-link-config-test" {} ''
-      mkdir -p checkout/extensions checkout/.git agent
-      echo settings > checkout/settings.json
-      echo readme > checkout/README.md
-      echo theirs > checkout/auth.json
-      echo theirs > checkout/AGENTS.md
+      absent() { if grep --quiet "$@"; then echo "unexpected match: $*" >&2; exit 1; fi; }
+      checkout=$PWD/checkout
+      mkdir -p "$checkout/extensions" "$checkout/.git" agent
+      echo settings > "$checkout/settings.json"
+      echo readme > "$checkout/README.md"
+      echo theirs > "$checkout/auth.json"
+      echo theirs > "$checkout/AGENTS.md"
       echo mine > agent/auth.json
       ln -s /nix/store/managed agent/AGENTS.md
 
-      ${link} state/pi.links agent checkout README.md 2> warnings
+      ${link} link state/pi.links agent "$checkout" README.md 2> warnings
 
-      [[ $(readlink agent/settings.json) == checkout/settings.json ]]
-      [[ $(readlink agent/extensions) == checkout/extensions ]]
+      [[ $(cat agent/settings.json) == settings && -L agent/settings.json ]]
+      [[ $(readlink agent/extensions) == "$checkout/extensions" ]]
       [[ ! -e agent/README.md && ! -e agent/.git ]]
       [[ $(cat agent/auth.json) == mine ]]
       [[ $(readlink agent/AGENTS.md) == /nix/store/managed ]]
       grep --quiet 'agent/auth.json exists' warnings
-      ! grep --quiet AGENTS.md warnings
-      [[ $(cat state/pi.links) == $'extensions\nsettings.json' ]]
+      absent AGENTS.md warnings
+      [[ $(cut -f1 state/pi.links | tr '\n' ' ') == 'extensions settings.json ' ]]
 
-      rm checkout/settings.json
-      echo new > checkout/models.json
-      ${link} state/pi.links agent checkout README.md 2> /dev/null
+      # A harness that saves by replacing the file now owns it.
+      rm agent/settings.json
+      echo rewritten > agent/settings.json
+      rm "$checkout/extensions/.." 2> /dev/null || true
+      echo new > "$checkout/models.json"
+      printf '\n' >> state/pi.links
+      ${link} link state/pi.links agent "$checkout" README.md 2> warnings
 
-      [[ ! -L agent/settings.json && -L agent/models.json ]]
+      [[ $(cat agent/settings.json) == rewritten && ! -L agent/settings.json ]]
+      grep --quiet 'agent/settings.json exists' warnings
+      [[ -L agent/models.json ]]
+      absent settings.json state/pi.links
 
-      ${link} state/pi.links agent "" 2> /dev/null
+      # `clean` drops what is no longer wanted and links nothing new.
+      echo later > "$checkout/later.json"
+      ${link} clean state/pi.links agent "$checkout" README.md models.json
+      [[ ! -e agent/models.json && ! -e agent/later.json && -L agent/extensions ]]
 
-      [[ ! -L agent/models.json && ! -L agent/extensions && ! -e state/pi.links ]]
-      [[ $(cat agent/auth.json) == mine && -L agent/AGENTS.md ]]
+      ${link} link state/pi.links agent "" 2> /dev/null
 
-      ${link} state/pi.links agent missing 2> warnings
+      [[ ! -L agent/extensions && ! -e state/pi.links ]]
+      [[ $(cat agent/settings.json) == rewritten && $(cat agent/auth.json) == mine && -L agent/AGENTS.md ]]
+
+      ${link} link state/pi.links agent "$PWD/missing" 2> warnings
       grep --quiet 'missing does not exist' warnings
 
       touch $out
@@ -425,20 +487,32 @@ in {
     pkgs.runCommand "agent-tools-project-install-test" {
       nativeBuildInputs = [pkgs.git];
     } ''
+      absent() { if grep --quiet "$@"; then echo "unexpected match: $*" >&2; exit 1; fi; }
       export HOME=$TMPDIR
+
+      # Outside a repository there is no project to link into.
+      mkdir -p loose/.claude/skills
+      ln -s /nix/store/home-manager-link loose/.claude/skills/review
+      (cd loose && ${projectBefore.shellHook}) 2> warnings
+      grep --quiet 'not inside a git repository' warnings
+      [[ $(readlink loose/.claude/skills/review) == /nix/store/home-manager-link && ! -e loose/.agents ]]
+
       mkdir project && cd project
       git init --quiet
       mkdir -p .claude/skills/review sub
       echo mine > .claude/skills/review/SKILL.md
+      # A store link someone else made is not ours either.
+      ln -s /nix/store/home-manager-link .claude/skills/deploy
 
       (cd sub && ${projectBefore.shellHook}) 2> warnings
 
       [[ -f .claude/skills/review/SKILL.md && ! -L .claude/skills/review ]]
       grep --quiet '.claude/skills/review exists' warnings
+      [[ $(readlink .claude/skills/deploy) == /nix/store/home-manager-link ]]
       [[ -f .claude/skills/lint/SKILL.md && -L .claude/skills/lint ]]
       [[ -f .agents/skills/review/SKILL.md && -L .agents/skills/review ]]
       grep --quiet --line-regexp '/.agents/skills/lint' .git/info/exclude
-      ! grep --quiet --line-regexp '/.claude/skills/review' .git/info/exclude
+      absent --line-regexp '/.claude/skills/review' .git/info/exclude
       [[ -z $(git status --porcelain -- .agents) ]]
 
       mkdir .agents/skills/from-a-cli
@@ -450,22 +524,31 @@ in {
       grep --quiet --line-regexp '.claude/skills: 2 managed, 1 unmanaged' status
       rm -r .agents/skills/from-a-cli .agents/skills/linked
 
-      ${projectAfter.shellHook}
+      ${projectAfter.shellHook} 2> /dev/null
 
       [[ ! -e .claude/skills/lint && ! -L .agents/skills/lint ]]
       [[ -L .agents/skills/deploy ]]
-      ! grep --quiet lint .git/info/exclude
+      absent lint .git/info/exclude
       [[ $(grep --count 'agent-tools begin' .git/info/exclude) == 1 ]]
 
       ${projectCodexDisabled.shellHook} 2> /dev/null
 
-      [[ ! -e .agents ]]
+      [[ ! -e .agents/skills/review && ! -e .agents/skills/deploy ]]
       [[ -L .claude/skills/lint ]]
 
       ${(project {}).shellHook}
 
       [[ -f .claude/skills/review/SKILL.md && ! -e .claude/skills/lint ]]
-      ! grep --quiet agent-tools .git/info/exclude
+      [[ $(readlink .claude/skills/deploy) == /nix/store/home-manager-link ]]
+      absent agent-tools .git/info/exclude
+
+      # A skills directory that is itself a link to another one.
+      rm -r .claude/skills .agents
+      mkdir -p .agents/skills
+      ln -s ../.agents/skills .claude/skills
+      ${projectBefore.shellHook}
+      ${projectBefore.shellHook}
+      [[ -L .agents/skills/review && -f .claude/skills/lint/SKILL.md ]]
 
       touch $out
     '';

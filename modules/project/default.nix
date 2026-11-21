@@ -1,7 +1,6 @@
 {
   config,
   lib,
-  options,
   pkgs,
   ...
 }: let
@@ -10,13 +9,6 @@
 
   links = pkgs.writeText "agent-tools-links" (
     lib.concatStrings (lib.mapAttrsToList (destination: path: "${destination}\t${path}\n") cfg.resolved.projectSkillLinks)
-  );
-
-  # Every known harness directory is swept, enabled or not, so links left by
-  # a harness that was since disabled are cleaned up too.
-  declared = lib.attrNames (options.agents.type.getSubOptions []);
-  sweptDirs = lib.unique (
-    lib.filter (dir: dir != null) (lib.mapAttrsToList (_: harness: harness.project.skillsDir) (removeAttrs cfg declared))
   );
 
   status = import ../../lib/status.nix {inherit lib pkgs;} {
@@ -28,7 +20,7 @@
 
   install = pkgs.writeShellApplication {
     name = "agent-tools-install";
-    runtimeInputs = [pkgs.coreutils pkgs.git pkgs.gnused];
+    runtimeInputs = [pkgs.coreutils pkgs.diffutils pkgs.git pkgs.gnused];
     text = builtins.readFile ./install.sh;
   };
 in {
@@ -50,7 +42,7 @@ in {
   config.project = {
     packages = cfg.resolved.packages ++ [status];
     shellHook = ''
-      ${lib.getExe install} ${links} ${lib.escapeShellArgs sweptDirs}
+      ${lib.getExe install} ${links}
     '';
   };
 }

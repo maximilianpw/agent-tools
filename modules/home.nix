@@ -47,7 +47,11 @@
           harness.files
     )
     cfg.resolved.harnesses;
-  isText = instructions: lib.isString instructions && !lib.hasPrefix "/" instructions;
+  # A string is a path only when it looks like one; instructions may well
+  # start with a slash command.
+  isText = instructions:
+    lib.isString instructions
+    && (!lib.hasPrefix "/" instructions || builtins.match "[^[:space:]]*" instructions == null);
 
   instructionsFor = harness: let
     base =
@@ -72,11 +76,18 @@
     then {text = base;}
     else {source = base;};
 
-  instructionFiles = lib.filterAttrs (_: file: file != null) (
-    lib.mapAttrs' (_: harness: lib.nameValuePair harness.home.instructionsFile (instructionsFor harness)) (
-      lib.filterAttrs (_: harness: harness.home.instructionsFile != null) cfg.resolved.harnesses
-    )
-  );
+  instructionFiles = let
+    perHarness = lib.mapAttrsToList (name: harness: {
+      inherit name;
+      file = harness.home.instructionsFile;
+      value = instructionsFor harness;
+    }) (lib.filterAttrs (_: harness: harness.home.instructionsFile != null) cfg.resolved.harnesses);
+    pick = file: entries:
+      if lib.length (lib.unique (map (entry: entry.value) entries)) > 1
+      then throw "agents: ${lib.concatMapStringsSep ", " (entry: entry.name) entries} share ${file} but their instructions differ."
+      else (lib.head entries).value;
+  in
+    lib.mapAttrs pick (lib.groupBy (entry: entry.file) (lib.filter (entry: entry.value != null) perHarness));
 
   skillsDirs = lib.unique (
     lib.filter (dir: dir != null) (lib.mapAttrsToList (_: harness: harness.home.skillsDir) cfg.resolved.harnesses)
@@ -104,21 +115,25 @@
       )
     );
 
-  linkConfigCommands = lib.mapAttrsToList (
-    name: harness: let
-      from = harness.configFrom;
-      active = harness.enable && from != null;
-    in ''
-      run ${lib.getExe linkConfig} \
-        "''${XDG_STATE_HOME:-$HOME/.local/state}"/agent-tools/${lib.escapeShellArg name}.links \
-        "$HOME"/${lib.escapeShellArg harness.home.configDir} \
-        ${
-        if active
-        then "${shellPath from.path} ${lib.escapeShellArgs (from.exclude ++ declaredIn harness.home.configDir)}"
-        else "''"
-      }
-    ''
-  ) (lib.filterAttrs (_: harness: harness.home.configDir != null) (removeAttrs cfg declared));
+  linkConfigCommands = mode:
+    lib.concatStrings (lib.mapAttrsToList (
+      name: harness: let
+        from = harness.configFrom;
+        active = harness.enable && from != null;
+      in
+        if active && !(lib.hasPrefix "/" from.path || lib.hasPrefix "~/" from.path)
+        then throw "agents.${name}.configFrom: `${from.path}` must be absolute or start with `~/`."
+        else ''
+          run ${lib.getExe linkConfig} ${mode} \
+            "''${XDG_STATE_HOME:-$HOME/.local/state}"/agent-tools/${lib.escapeShellArg name}.links \
+            "$HOME"/${lib.escapeShellArg harness.home.configDir} \
+            ${
+            if active
+            then "${shellPath from.path} ${lib.escapeShellArgs (from.exclude ++ declaredIn harness.home.configDir)}"
+            else "''"
+          }
+        ''
+    ) (lib.filterAttrs (_: harness: harness.home.configDir != null) (removeAttrs cfg declared)));
   declared = lib.attrNames (options.agents.type.getSubOptions []);
 
   status = import ../lib/status.nix {inherit lib pkgs;} {
@@ -211,11 +226,20 @@ in {
   ];
 
   config.home = {
-    # After Home Manager's own links, which take precedence.
-    activation.agentToolsLinkConfig = {
-      after = ["linkGeneration"];
-      before = [];
-      data = lib.concatStrings linkConfigCommands;
+    activation = {
+      # Before Home Manager looks for files in its way: an entry that moved
+      # from the checkout to a declared file must not block its own successor.
+      agentToolsCleanConfig = {
+        after = [];
+        before = ["checkLinkTargets"];
+        data = linkConfigCommands "clean";
+      };
+      # After Home Manager's own links, which take precedence.
+      agentToolsLinkConfig = {
+        after = ["linkGeneration"];
+        before = [];
+        data = linkConfigCommands "link";
+      };
     };
     packages = cfg.resolved.packages ++ lib.optional (skillsDirs != []) status;
     # One link per skill, so skills installed by other means can share the directory.
