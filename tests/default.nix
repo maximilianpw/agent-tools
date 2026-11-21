@@ -121,6 +121,57 @@
       };
     };
 
+    testFilesLandInTheHarnessConfigDirectory = {
+      expr =
+        (evalHome {
+          claude-code = {
+            enable = true;
+            package = null;
+            files = {
+              "settings.json" = ./fixtures/pack/README.md;
+              commands = {
+                source = ./fixtures/pack;
+                recursive = true;
+                force = true;
+              };
+              "rules/note.md".text = "note";
+            };
+          };
+          codex.files."config.toml".text = "not enabled";
+        })
+        .file;
+      expected = {
+        ".claude/settings.json" = {
+          source = ./fixtures/pack/README.md;
+          recursive = false;
+          force = false;
+        };
+        ".claude/commands" = {
+          source = ./fixtures/pack;
+          recursive = true;
+          force = true;
+        };
+        ".claude/rules/note.md" = {
+          text = "note";
+          recursive = false;
+          force = false;
+        };
+      };
+    };
+
+    testFilesNeedAConfigDirectory = {
+      expr =
+        fails
+        (evalHome {
+          ccusage = {
+            enable = true;
+            files."config.json".text = "{}";
+          };
+        })
+      .file;
+      expected = true;
+    };
+
     testEnabledNameWithoutHarnessEntryInstallsItsPackage = {
       expr = map lib.getName home.packages;
       expected = ["jq" "hello" "hello" "agent-tools"];

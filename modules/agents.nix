@@ -86,6 +86,11 @@ options through `agentsModules` (the `agents` set itself) and `harnessModules`
       };
 
       home = {
+        configDir = mkOption {
+          type = types.nullOr types.str;
+          default = null;
+          description = "User-level configuration directory of the harness, relative to the home directory.";
+        };
         instructionsFile = mkOption {
           type = types.nullOr types.str;
           default = null;

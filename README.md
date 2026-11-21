@@ -79,6 +79,7 @@ never touched; pin their source to bring one under management.
 | `agents.<harness>.package` | Defaults to `agents.packageSet.<harness>`; `null` configures a harness you install another way. |
 | `agents.<harness>.instructions` | Instructions for this harness in place of the shared ones. Home Manager only. |
 | `agents.<harness>.extraInstructions` | Text appended to this harness's instructions. Home Manager only. |
+| `agents.<harness>.files.<path>` | A file in the harness's configuration directory, such as `settings.json`. Takes a path, or `{ source; text; recursive; force; }`. Home Manager only. |
 | `agents.<harness>.skills.sources.<name>` | Skills for this harness only. The same name as a default source replaces it. |
 | `agents.<harness>.skills.include` | The only skill names this harness gets; unset means all. |
 | `agents.<harness>.skills.exclude` | Skill names this harness does not get. |
@@ -93,15 +94,15 @@ To keep the instructions file editable without rebuilding, pass
 
 ## Harnesses
 
-| Harness | User instructions | User skills | Project skills |
-| --- | --- | --- | --- |
-| `amp` | `~/.config/amp/AGENTS.md` | `~/.agents/skills` | `.agents/skills` |
-| `claude-code` | `~/.claude/CLAUDE.md` | `~/.claude/skills` | `.claude/skills` |
-| `codex` | `~/.codex/AGENTS.md` | `~/.agents/skills` | `.agents/skills` |
-| `gemini-cli` | `~/.gemini/GEMINI.md` | `~/.agents/skills` | `.agents/skills` |
-| `grok` | `~/.grok/AGENTS.md` | `~/.grok/skills` | `.grok/skills` |
-| `opencode` | `~/.config/opencode/AGENTS.md` | `~/.agents/skills` | `.agents/skills` |
-| `pi` | `~/.pi/agent/AGENTS.md` | `~/.agents/skills` | `.agents/skills` |
+| Harness | Configuration directory | Instructions | User skills | Project skills |
+| --- | --- | --- | --- | --- |
+| `amp` | `~/.config/amp` | `AGENTS.md` | `~/.agents/skills` | `.agents/skills` |
+| `claude-code` | `~/.claude` | `CLAUDE.md` | `~/.claude/skills` | `.claude/skills` |
+| `codex` | `~/.codex` | `AGENTS.md` | `~/.agents/skills` | `.agents/skills` |
+| `gemini-cli` | `~/.gemini` | `GEMINI.md` | `~/.agents/skills` | `.agents/skills` |
+| `grok` | `~/.grok` | `AGENTS.md` | `~/.grok/skills` | `.grok/skills` |
+| `opencode` | `~/.config/opencode` | `AGENTS.md` | `~/.agents/skills` | `.agents/skills` |
+| `pi` | `~/.pi/agent` | `AGENTS.md` | `~/.agents/skills` | `.agents/skills` |
 
 Harnesses that share a directory get the union of their skills there, so
 per-harness `skills` settings only separate harnesses with different
@@ -115,11 +116,14 @@ it gets files once you say where it reads them:
 ```nix
 agents.my-agent = {
   enable = true;
+  home.configDir = ".my-agent";
   home.instructionsFile = ".my-agent/AGENTS.md";
   home.skillsDir = ".my-agent/skills";
   project.skillsDir = ".agents/skills";
 };
 ```
 
-Settings, hooks, plugins and MCP servers differ per harness and are not managed
-here.
+Settings, hooks and plugins differ per harness, so they are not modelled: put
+the harness's own file in place with `files`. A harness that rewrites its
+settings needs the file writable, which a store link is not; use
+`config.lib.file.mkOutOfStoreSymlink` for those.

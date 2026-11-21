@@ -7,6 +7,45 @@
   inherit (lib) mkOption types;
   cfg = config.agents;
   instructionsType = types.either types.path types.lines;
+
+  fileType = types.coercedTo types.path (source: {inherit source;}) (types.submodule {
+    options = {
+      source = mkOption {
+        type = types.nullOr types.path;
+        default = null;
+        description = "File or directory to link.";
+      };
+      text = mkOption {
+        type = types.nullOr types.lines;
+        default = null;
+        description = "Contents of the file, in place of `source`.";
+      };
+      recursive = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Link the files inside a source directory one by one, leaving the directory writable.";
+      };
+      force = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Replace a file that is already there.";
+      };
+    };
+  });
+
+  configFiles =
+    lib.concatMapAttrs (
+      name: harness:
+        if harness.files != {} && harness.home.configDir == null
+        then throw "agents.${name}.files: set agents.${name}.home.configDir, the directory these files are relative to."
+        else
+          lib.mapAttrs' (
+            file: value:
+              lib.nameValuePair "${harness.home.configDir}/${file}" (lib.filterAttrs (_: field: field != null) value)
+          )
+          harness.files
+    )
+    cfg.resolved.harnesses;
   isText = instructions: lib.isString instructions && !lib.hasPrefix "/" instructions;
 
   instructionsFor = harness: let
@@ -70,6 +109,25 @@ in {
               default = null;
               description = "Instructions for this harness in place of `agents.defaults.instructions`.";
             };
+            files = mkOption {
+              type = types.attrsOf fileType;
+              default = {};
+              example = lib.literalExpression ''
+                {
+                  "settings.json" = ./claude-settings.json;
+                  commands = {
+                    source = ./commands;
+                    recursive = true;
+                  };
+                }
+              '';
+              description = ''
+                Files in this harness's configuration directory, named by their
+                path inside it. Takes a path, or `{ source; text; recursive;
+                force; }`. A harness that rewrites a file needs it writable:
+                link it with `config.lib.file.mkOutOfStoreSymlink`.
+              '';
+            };
             extraInstructions = mkOption {
               type = types.lines;
               default = "";
@@ -89,6 +147,11 @@ in {
   config.home = {
     packages = cfg.resolved.packages ++ lib.optional (skillsDirs != []) status;
     # One link per skill, so skills installed by other means can share the directory.
-    file = instructionFiles // lib.mapAttrs (_: path: {source = path;}) cfg.resolved.homeSkillLinks;
+    file = lib.mkMerge [
+      instructionFiles
+      # One link per skill, so skills installed by other means can share the directory.
+      (lib.mapAttrs (_: path: {source = path;}) cfg.resolved.homeSkillLinks)
+      configFiles
+    ];
   };
 }
