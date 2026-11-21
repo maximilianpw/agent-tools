@@ -1,0 +1,94 @@
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}: let
+  inherit (lib) mkOption types;
+  cfg = config.agents;
+  instructionsType = types.either types.path types.lines;
+  isText = instructions: lib.isString instructions && !lib.hasPrefix "/" instructions;
+
+  instructionsFor = harness: let
+    base =
+      if harness.instructions != null
+      then harness.instructions
+      else cfg.defaults.instructions;
+  in
+    if harness.extraInstructions != ""
+    then {
+      text = lib.concatStringsSep "\n" (
+        lib.optional (base != null) (
+          if isText base
+          then base
+          else builtins.readFile base
+        )
+        ++ [harness.extraInstructions]
+      );
+    }
+    else if base == null
+    then null
+    else if isText base
+    then {text = base;}
+    else {source = base;};
+
+  instructionFiles = lib.filterAttrs (_: file: file != null) (
+    lib.mapAttrs' (_: harness: lib.nameValuePair harness.home.instructionsFile (instructionsFor harness)) (
+      lib.filterAttrs (_: harness: harness.home.instructionsFile != null) cfg.resolved.harnesses
+    )
+  );
+
+  skillsDirs = lib.unique (
+    lib.filter (dir: dir != null) (lib.mapAttrsToList (_: harness: harness.home.skillsDir) cfg.resolved.harnesses)
+  );
+  status = import ../lib/status.nix {inherit lib pkgs;} {
+    base = ''"$HOME"'';
+    dirs = skillsDirs;
+  };
+in {
+  imports = [
+    (import ./agents.nix {
+      agentsModules = [
+        {
+          options.defaults.instructions = mkOption {
+            type = types.nullOr instructionsType;
+            default = null;
+            example = lib.literalExpression "./AGENTS.md";
+            description = ''
+              Instructions every enabled harness reads at user level: a file,
+              or the text itself. A file is linked as given, so
+              `config.lib.file.mkOutOfStoreSymlink` keeps it editable in place.
+            '';
+          };
+        }
+      ];
+      harnessModules = [
+        {
+          options = {
+            instructions = mkOption {
+              type = types.nullOr instructionsType;
+              default = null;
+              description = "Instructions for this harness in place of `agents.defaults.instructions`.";
+            };
+            extraInstructions = mkOption {
+              type = types.lines;
+              default = "";
+              description = ''
+                Appended to this harness's instructions. The result is rendered
+                into the store, so the instructions it is appended to must be
+                readable during evaluation.
+              '';
+            };
+          };
+        }
+      ];
+    })
+    ./harnesses.nix
+  ];
+
+  config.home = {
+    packages = cfg.resolved.packages ++ lib.optional (skillsDirs != []) status;
+    # One link per skill, so skills installed by other means can share the directory.
+    file = instructionFiles // lib.mapAttrs (_: path: {source = path;}) cfg.resolved.homeSkillLinks;
+  };
+}
