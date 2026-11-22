@@ -76,12 +76,14 @@ never touched; pin their source to bring one under management.
 | Option | Meaning |
 | --- | --- |
 | `agents.defaults.instructions` | A file or text, written to every enabled harness's user-level instructions file. Home Manager only. |
+| `agents.defaults.mcpServers.<name>` | An MCP server for every enabled harness that takes them: `{ command; args; env; }` or `{ url; headers; }`, plus `settings` in the harness's own format. Home Manager only. |
 | `agents.defaults.skills.sources.<name>` | A skill directory or a tree of them. Takes a path, or `{ path; include; exclude; prefix; depth; }`. |
 | `agents.<harness>.enable` | Install the harness and give it instructions and skills. |
 | `agents.<harness>.package` | Defaults to `agents.packageSet.<harness>`; `null` configures a harness you install another way. |
 | `agents.<harness>.instructions` | Instructions for this harness in place of the shared ones. Home Manager only. |
 | `agents.<harness>.extraInstructions` | Text appended to this harness's instructions. Home Manager only. |
 | `agents.<harness>.configFrom` | A directory on this machine, such as `"~/pi-config"`, whose entries are all linked into the harness's configuration directory. Takes a path, or `{ path; exclude; }`. Home Manager only. |
+| `agents.<harness>.mcpServers.<name>` | An MCP server for this harness only. The same name as a default server replaces it; `null` removes it. Home Manager only. |
 | `agents.<harness>.files.<path>` | A file in the harness's configuration directory, such as `settings.json`. Takes a path, or `{ source; text; recursive; force; }`. Home Manager only. |
 | `agents.<harness>.skills.sources.<name>` | Skills for this harness only. The same name as a default source replaces it. |
 | `agents.<harness>.skills.include` | The only skill names this harness gets; unset means all. |
@@ -131,6 +133,14 @@ place. The links are made when the configuration is activated, so files added
 to the checkout appear on the next rebuild without being listed. Anything
 declared through this module, and anything already in the directory, is left as
 it is. That includes a link the harness later replaced with a file of its own.
+
+MCP servers reach Claude Code and Codex through their own `mcp add` and
+`mcp remove` commands on activation, since each keeps its servers in a file it
+rewrites (`~/.claude.json`, `~/.codex/config.toml`). Only servers agent-tools
+registered are ever removed, but a declared name replaces a server of that name
+added by hand. Pi gets a `mcp.json` in its configuration directory, which wins
+over one from `configFrom`. Codex cannot take `headers` or `settings`, and
+declaring servers for any other harness is an error.
 
 Settings, hooks and plugins differ per harness, so they are not modelled: put
 the harness's own file in place with `files`. A harness that rewrites its

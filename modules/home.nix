@@ -34,17 +34,152 @@
     };
   });
 
+  mcpServerType = types.submodule {
+    options = {
+      command = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Program of a stdio server. Set this or `url`.";
+      };
+      args = mkOption {
+        type = types.listOf types.str;
+        default = [];
+        description = "Arguments of a stdio server.";
+      };
+      env = mkOption {
+        type = types.attrsOf types.str;
+        default = {};
+        description = "Environment of a stdio server.";
+      };
+      url = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Address of a streamable HTTP server. Set this or `command`.";
+      };
+      headers = mkOption {
+        type = types.attrsOf types.str;
+        default = {};
+        description = "Headers sent to an HTTP server. Codex cannot take them.";
+      };
+      settings = mkOption {
+        type = types.attrsOf types.anything;
+        default = {};
+        example = {timeout = 60;};
+        description = "Keys in the harness's own format, merged into its entry. Codex cannot take them.";
+      };
+    };
+  };
+
+  mcpServersFor = name: harness:
+    lib.mapAttrs (server: value:
+      if (value.command == null) == (value.url == null)
+      then throw "agents MCP server `${server}` for ${name}: set exactly one of `command` and `url`."
+      else value)
+    (lib.filterAttrs (_: value: value != null) (cfg.defaults.mcpServers // harness.mcpServers));
+
+  # The JSON entry Claude Code and Pi both read.
+  mcpJsonEntry = typed: value:
+    (
+      if value.command != null
+      then
+        lib.optionalAttrs typed {type = "stdio";}
+        // {inherit (value) command args;}
+        // lib.optionalAttrs (value.env != {}) {inherit (value) env;}
+      else
+        lib.optionalAttrs typed {type = "http";}
+        // {inherit (value) url;}
+        // lib.optionalAttrs (value.headers != {}) {inherit (value) headers;}
+    )
+    // value.settings;
+
+  codexAddArgs = server: value:
+    if value.headers != {} || value.settings != {}
+    then throw "agents MCP server `${server}` for codex: `codex mcp add` takes neither headers nor settings."
+    else if value.command != null
+    then ["mcp" "add" server] ++ lib.concatMap (key: ["--env" "${key}=${value.env.${key}}"]) (lib.attrNames value.env) ++ ["--" value.command] ++ value.args
+    else ["mcp" "add" server "--url" value.url];
+
+  # Harnesses whose MCP servers live in a file the harness itself rewrites;
+  # their CLI registers them instead.
+  mcpCli = {
+    claude-code = {
+      kind = "claude";
+      program = "claude";
+      remove = ["mcp" "remove" "--scope" "user"];
+      add = server: value: ["mcp" "add-json" "--scope" "user" server (builtins.toJSON (mcpJsonEntry true value))];
+    };
+    codex = {
+      kind = "codex";
+      program = "codex";
+      remove = ["mcp" "remove"];
+      add = codexAddArgs;
+    };
+  };
+  mcpFile = {
+    pi = servers: {"mcp.json".text = builtins.toJSON {mcpServers = lib.mapAttrs (_: mcpJsonEntry false) servers;};};
+  };
+
+  unsupportedMcp = lib.attrNames (lib.filterAttrs (
+      name: harness: harness.mcpServers != {} && !(mcpCli ? ${name}) && !(mcpFile ? ${name})
+    )
+    cfg.resolved.harnesses);
+
+  harnessFiles = name: harness: let
+    servers = mcpServersFor name harness;
+  in
+    lib.optionalAttrs (mcpFile ? ${name} && servers != {}) (mcpFile.${name} servers) // harness.files;
+
+  linkMcp = pkgs.writeShellApplication {
+    name = "agent-tools-link-mcp";
+    runtimeInputs = [pkgs.coreutils pkgs.jq];
+    text = builtins.readFile ./link-mcp.sh;
+  };
+
+  # Disabled harnesses are listed too, so servers registered earlier are removed.
+  mcpWanted =
+    lib.mapAttrs (name: cli: {
+      inherit (cli) remove;
+      servers =
+        lib.mapAttrs (server: value: let
+          add = cli.add server value;
+        in {
+          inherit add;
+          fingerprint = builtins.hashString "sha256" (builtins.toJSON add);
+        }) (
+          if cfg.${name}.enable
+          then mcpServersFor name cfg.${name}
+          else {}
+        );
+    })
+    mcpCli;
+
+  linkMcpCommands = lib.concatStrings (lib.mapAttrsToList (name: cli: let
+      harness = cfg.${name};
+      program =
+        if harness.enable && harness.package != null
+        then lib.getExe' harness.package cli.program
+        else cli.program;
+      wanted = pkgs.writeText "agent-tools-${name}-mcp.json" (builtins.toJSON cfg.resolved.mcp.${name});
+    in ''
+      run ${lib.getExe linkMcp} ${cli.kind} \
+        "''${XDG_STATE_HOME:-$HOME/.local/state}"/agent-tools/${lib.escapeShellArg name}.mcp \
+        ${lib.escapeShellArg program} ${wanted}
+    '')
+    mcpCli);
+
   configFiles =
     lib.concatMapAttrs (
-      name: harness:
-        if harness.files != {} && harness.home.configDir == null
+      name: harness: let
+        files = harnessFiles name harness;
+      in
+        if files != {} && harness.home.configDir == null
         then throw "agents.${name}.files: set agents.${name}.home.configDir, the directory these files are relative to."
         else
           lib.mapAttrs' (
             file: value:
               lib.nameValuePair "${harness.home.configDir}/${file}" (lib.filterAttrs (_: field: field != null) value)
           )
-          harness.files
+          files
     )
     cfg.resolved.harnesses;
   # A string is a path only when it looks like one; instructions may well
@@ -145,6 +280,30 @@ in {
     (import ./agents.nix {
       agentsModules = [
         {
+          options.resolved.mcp = mkOption {
+            type = types.attrsOf types.raw;
+            internal = true;
+            readOnly = true;
+          };
+          options.defaults.mcpServers = mkOption {
+            type = types.attrsOf mcpServerType;
+            default = {};
+            example = lib.literalExpression ''
+              {
+                docs.url = "https://example.com/mcp";
+                browser = {
+                  command = "browser-mcp";
+                  args = ["--headless"];
+                };
+              }
+            '';
+            description = ''
+              MCP servers every enabled harness that supports them gets:
+              Claude Code and Codex through their own CLI, which keeps
+              servers registered by other means, and Pi through its
+              `mcp.json`. agent-tools removes only servers it registered.
+            '';
+          };
           options.defaults.instructions = mkOption {
             type = types.nullOr instructionsType;
             default = null;
@@ -190,6 +349,14 @@ in {
                 directory is replaced.
               '';
             };
+            mcpServers = mkOption {
+              type = types.attrsOf (types.nullOr mcpServerType);
+              default = {};
+              description = ''
+                MCP servers for this harness only. One with the name of a
+                default server replaces it; `null` removes it.
+              '';
+            };
             files = mkOption {
               type = types.attrsOf fileType;
               default = {};
@@ -225,6 +392,8 @@ in {
     ./harnesses.nix
   ];
 
+  config.agents.resolved.mcp = mcpWanted;
+
   config.home = {
     activation = {
       # Before Home Manager looks for files in its way: an entry that moved
@@ -239,6 +408,14 @@ in {
         after = ["linkGeneration"];
         before = [];
         data = linkConfigCommands "link";
+      };
+      agentToolsMcp = {
+        after = ["linkGeneration"];
+        before = [];
+        data =
+          if unsupportedMcp != []
+          then throw "agents: ${lib.concatStringsSep ", " unsupportedMcp} cannot take MCP servers; agent-tools writes them for claude-code, codex and pi."
+          else linkMcpCommands;
       };
     };
     packages = cfg.resolved.packages ++ lib.optional (skillsDirs != []) status;

@@ -25,6 +25,36 @@
     .config
     .home;
 
+  evalAgents = agents:
+    (lib.evalModules {
+      modules = [../modules/home.nix homeStub {_module.args.pkgs = pkgs;} {agents = {packageSet = stubPackages;} // agents;}];
+    })
+    .config;
+
+  mcpConfig = evalAgents {
+    defaults.mcpServers = {
+      docs.url = "https://docs.example/mcp";
+      browser = {
+        command = "browser-mcp";
+        args = ["--headless"];
+        env.DISPLAY = ":1";
+      };
+    };
+    claude-code.enable = true;
+    codex = {
+      enable = true;
+      mcpServers.docs = null;
+    };
+    pi = {
+      enable = true;
+      mcpServers.browser = {
+        command = "browser-mcp";
+        settings.timeout = 60;
+      };
+    };
+  };
+  mcpAdds = name: lib.mapAttrs (_: server: server.add) mcpConfig.agents.resolved.mcp.${name}.servers;
+
   evalProject = agents:
     (lib.evalModules {
       modules = [../modules/project {_module.args.pkgs = pkgs;} {agents = {packageSet = stubPackages;} // agents;}];
@@ -396,6 +426,76 @@
       };
     };
 
+    testMcpServersAreRegisteredThroughClaudeAndCodex = {
+      expr = {
+        claude = mcpAdds "claude-code";
+        codex = mcpAdds "codex";
+      };
+      expected = {
+        claude = {
+          browser = ["mcp" "add-json" "--scope" "user" "browser" ''{"args":["--headless"],"command":"browser-mcp","env":{"DISPLAY":":1"},"type":"stdio"}''];
+          docs = ["mcp" "add-json" "--scope" "user" "docs" ''{"type":"http","url":"https://docs.example/mcp"}''];
+        };
+        codex.browser = ["mcp" "add" "browser" "--env" "DISPLAY=:1" "--" "browser-mcp" "--headless"];
+      };
+    };
+
+    testPiReadsMcpServersFromItsConfigDirectory = {
+      expr = builtins.fromJSON mcpConfig.home.file.".pi/agent/mcp.json".text;
+      expected.mcpServers = {
+        browser = {
+          command = "browser-mcp";
+          args = [];
+          timeout = 60;
+        };
+        docs.url = "https://docs.example/mcp";
+      };
+    };
+
+    testDisabledHarnessesWantNoMcpServers = {
+      expr = (evalAgents {defaults.mcpServers.docs.url = "https://docs.example/mcp";}).agents.resolved.mcp.claude-code.servers;
+      expected = {};
+    };
+
+    testMcpServerNeedsExactlyOneTransport = {
+      expr =
+        fails
+        (evalAgents {
+          claude-code.enable = true;
+          defaults.mcpServers.both = {
+            command = "x";
+            url = "https://x.example";
+          };
+        }).agents.resolved.mcp;
+      expected = true;
+    };
+
+    testCodexCannotTakeHeaders = {
+      expr =
+        fails
+        (evalAgents {
+          codex.enable = true;
+          defaults.mcpServers.docs = {
+            url = "https://docs.example/mcp";
+            headers.Authorization = "Bearer x";
+          };
+        }).agents.resolved.mcp;
+      expected = true;
+    };
+
+    testHarnessWithoutMcpSupportRejectsItsOwnServers = {
+      expr =
+        fails
+        (evalHome {
+          amp = {
+            enable = true;
+            package = null;
+            mcpServers.docs.url = "https://docs.example/mcp";
+          };
+        }).activation.agentToolsMcp.data;
+      expected = true;
+    };
+
     testEnabledNameMissingFromPackageSetIsAnError = {
       expr = fails (evalHome {no-such-agent.enable = true;}).packages;
       expected = true;
@@ -424,6 +524,100 @@ in {
     if failures == []
     then pkgs.runCommand "agent-tools-eval-tests" {} "touch $out"
     else throw "eval tests failed:\n${lib.generators.toPretty {} failures}";
+
+  link-mcp = let
+    link = lib.getExe (pkgs.writeShellApplication {
+      name = "agent-tools-link-mcp";
+      runtimeInputs = [pkgs.coreutils pkgs.jq];
+      text = builtins.readFile ../modules/link-mcp.sh;
+    });
+    claudeWanted = servers:
+      pkgs.writeText "claude-wanted.json" (builtins.toJSON {
+        remove = ["mcp" "remove" "--scope" "user"];
+        servers =
+          lib.mapAttrs (name: fingerprint: {
+            inherit fingerprint;
+            add = ["mcp" "add-json" "--scope" "user" name ''{"url":"${fingerprint}"}''];
+          })
+          servers;
+      });
+    codexWanted = pkgs.writeText "codex-wanted.json" (builtins.toJSON {
+      remove = ["mcp" "remove"];
+      servers = {
+        tool = {
+          fingerprint = "one";
+          add = ["mcp" "add" "tool" "--" "tool-mcp" "--flag"];
+        };
+        remote = {
+          fingerprint = "one";
+          add = ["mcp" "add" "remote" "--url" "https://remote.example/mcp"];
+        };
+      };
+    });
+  in
+    pkgs.runCommand "agent-tools-link-mcp-test" {nativeBuildInputs = [pkgs.jq];} ''
+      export HOME=$PWD/home
+      mkdir -p "$HOME" bin
+      echo '{"mcpServers":{"docs":{"url":"by hand"},"other":{"url":"theirs"}},"projects":{}}' > "$HOME/.claude.json"
+      cat > bin/claude <<'EOF'
+      #!${pkgs.bash}/bin/bash
+      echo "$*" >> "$HOME/claude.calls"
+      file=$HOME/.claude.json
+      case $2 in
+        remove) jq --arg n "$5" 'del(.mcpServers[$n])' "$file" > "$file.new" ;;
+        add-json) jq --arg n "$5" --argjson v "$6" '.mcpServers[$n] = $v' "$file" > "$file.new" ;;
+      esac
+      mv "$file.new" "$file"
+      EOF
+      cat > bin/codex <<'EOF'
+      #!${pkgs.bash}/bin/bash
+      mkdir -p "$HOME/codex"
+      case $2 in
+        get) [[ -f $HOME/codex/$3 ]] ;;
+        remove) rm "$HOME/codex/$3" ;;
+        add)
+          name=$3
+          shift 3
+          echo "$*" > "$HOME/codex/$name"
+          # Like Codex waiting for an OAuth login it cannot open a browser for.
+          [[ $1 != --url ]] || sleep 60
+          ;;
+      esac
+      EOF
+      chmod +x bin/claude bin/codex
+      export PATH=$PWD/bin:$PATH
+      server() { jq --raw-output --arg n "$1" '.mcpServers[$n].url // "absent"' "$HOME/.claude.json"; }
+
+      # A declared name takes over a server registered by hand; others stay.
+      ${link} claude state/claude.mcp claude ${claudeWanted {docs = "one";}}
+      [[ $(server docs) == one && $(server other) == theirs ]]
+      [[ $(cat state/claude.mcp) == "docs	one" ]]
+
+      # Nothing changed: no calls.
+      rm "$HOME/claude.calls"
+      ${link} claude state/claude.mcp claude ${claudeWanted {docs = "one";}}
+      [[ ! -e $HOME/claude.calls ]]
+
+      # Removed by someone else: registered again.
+      jq 'del(.mcpServers.docs)' "$HOME/.claude.json" > tmp && mv tmp "$HOME/.claude.json"
+      ${link} claude state/claude.mcp claude ${claudeWanted {docs = "one";}}
+      [[ $(server docs) == one ]]
+
+      # A changed definition replaces the server; one no longer wanted goes.
+      ${link} claude state/claude.mcp claude ${claudeWanted {docs = "two";}}
+      [[ $(server docs) == two ]]
+      ${link} claude state/claude.mcp claude ${claudeWanted {}}
+      [[ $(server docs) == absent && $(server other) == theirs && ! -e state/claude.mcp ]]
+
+      AGENT_TOOLS_MCP_ADD_TIMEOUT=2 ${link} codex state/codex.mcp codex ${codexWanted}
+      [[ $(cat "$HOME/codex/tool") == "-- tool-mcp --flag" ]]
+      [[ $(cut -f1 state/codex.mcp | tr '\n' ' ') == 'remote tool ' ]]
+
+      ${link} claude state/claude.mcp no-such-cli ${claudeWanted {docs = "one";}} 2> warnings
+      grep --quiet 'no-such-cli is not installed' warnings
+
+      touch $out
+    '';
 
   link-config = let
     link = lib.getExe (pkgs.writeShellApplication {
