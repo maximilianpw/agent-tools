@@ -82,7 +82,7 @@ never touched; pin their source to bring one under management.
 | `agents.<harness>.package` | Defaults to `agents.packageSet.<harness>`; `null` configures a harness you install another way. |
 | `agents.<harness>.instructions` | Instructions for this harness in place of the shared ones. Home Manager only. |
 | `agents.<harness>.extraInstructions` | Text appended to this harness's instructions. Home Manager only. |
-| `agents.<harness>.configFrom` | A directory on this machine, such as `"~/pi-config"`, whose entries are all linked into the harness's configuration directory. Takes a path, or `{ path; exclude; }`. Home Manager only. |
+| `agents.<harness>.configFrom` | A directory on this machine, such as `"~/pi-config"`, whose entries are all linked into the harness's configuration directory. Takes a path, or `{ path; exclude; fallback; }`; `fallback` is linked instead while `path` does not exist. Home Manager only. |
 | `agents.<harness>.mcpServers.<name>` | An MCP server for this harness only. The same name as a default server replaces it; `null` removes it. Home Manager only. |
 | `agents.<harness>.files.<path>` | A file in the harness's configuration directory, such as `settings.json`. Takes a path, or `{ source; text; recursive; force; }`. Home Manager only. |
 | `agents.<harness>.skills.sources.<name>` | Skills for this harness only. The same name as a default source replaces it. |

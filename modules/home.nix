@@ -250,6 +250,11 @@
       )
     );
 
+  sourceOf = from:
+    if from.fallback == null
+    then shellPath from.path
+    else ''"$(if [[ -d ${shellPath from.path} ]]; then printf %s ${shellPath from.path}; else printf %s ${lib.escapeShellArg "${from.fallback}"}; fi)"'';
+
   linkConfigCommands = mode:
     lib.concatStrings (lib.mapAttrsToList (
       name: harness: let
@@ -264,7 +269,7 @@
             "$HOME"/${lib.escapeShellArg harness.home.configDir} \
             ${
             if active
-            then "${shellPath from.path} ${lib.escapeShellArgs (from.exclude ++ declaredIn harness.home.configDir)}"
+            then "${sourceOf from} ${lib.escapeShellArgs (from.exclude ++ declaredIn harness.home.configDir)}"
             else "''"
           }
         ''
@@ -335,6 +340,16 @@ in {
                     type = types.listOf types.str;
                     default = [];
                     description = "Entries of the directory to leave out.";
+                  };
+                  fallback = mkOption {
+                    type = types.nullOr types.path;
+                    default = null;
+                    example = lib.literalExpression "inputs.pi-config";
+                    description = ''
+                      Linked in place of `path` while that directory does not
+                      exist, such as a pinned copy of the checkout for machines
+                      that have not cloned it.
+                    '';
                   };
                 };
               }));

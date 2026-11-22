@@ -619,6 +619,41 @@ in {
       touch $out
     '';
 
+  config-from-fallback = let
+    activation =
+      (evalHome {
+        pi = {
+          enable = true;
+          package = null;
+          configFrom = {
+            path = "~/pi-config";
+            fallback = ./fixtures/pack;
+          };
+        };
+      })
+      .activation
+      .agentToolsLinkConfig
+      .data;
+  in
+    pkgs.runCommand "agent-tools-config-from-fallback-test" {} ''
+      export HOME=$PWD/home XDG_STATE_HOME=$PWD/state
+      mkdir -p "$HOME"
+      run() { "$@"; }
+      activate() {
+        ${activation}
+      }
+
+      activate
+      [[ $(readlink "$HOME/.pi/agent/README.md") == ${./fixtures/pack}/README.md ]]
+
+      mkdir "$HOME/pi-config"
+      echo mine > "$HOME/pi-config/README.md"
+      activate
+      [[ $(readlink "$HOME/.pi/agent/README.md") == "$HOME/pi-config/README.md" ]]
+
+      touch $out
+    '';
+
   link-config = let
     link = lib.getExe (pkgs.writeShellApplication {
       name = "agent-tools-link-config";
